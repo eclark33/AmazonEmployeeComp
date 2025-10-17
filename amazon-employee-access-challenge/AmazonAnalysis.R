@@ -8,6 +8,7 @@ library(tidyverse)
 library(vroom)
 library(glmnet)
 library(embed)
+library(janitor)
 
 
 # read in data
@@ -72,8 +73,7 @@ amazon_preds <- amazon_preds %>%
   select(id, .pred_1) %>%        
   rename(action = .pred_1)   
 
-# kaggle file 
-vroom_write(x = amazon_preds, file = "/Users/eliseclark/amazonpreds.csv", delim = ",")
+
 
 
 
@@ -84,7 +84,7 @@ penlog_recipe <- recipe(action ~ ., data = train_data) %>%
   step_mutate_at(c(resource, mgr_id, role_rollup_1, role_rollup_2, 
                    role_deptname, role_title, role_family_desc, 
                    role_family, role_code), fn = factor) %>%
-  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_other(all_nominal_predictors(), threshold = 0.001) %>%
   step_lencode_mixed(c(resource, mgr_id, role_rollup_1, role_rollup_2, 
                        role_deptname, role_title, role_family_desc, 
                        role_family, role_code), outcome = vars(action)) %>%
@@ -109,13 +109,13 @@ penlog_workflow <- workflow() %>%
 # Grid of values to tune over
 tuning_grid <- grid_regular(penalty(),
                               mixture(),
-                              levels = 3) ## L^2 total tuning possibilities
+                              levels = 4) ## L^2 total tuning possibilities
 # Split data for CV
 folds <- vfold_cv(train_data, v = 5, repeats = 3)
 
 # Run the CV
 CV_results <- penlog_workflow %>%
-  tune_grid(resamples = folds,
+ tune_grid(resamples = folds,        # Mcallentexas2324!
             grid = tuning_grid,
             metrics = metric_set(roc_auc))
 
@@ -139,13 +139,65 @@ penlog_preds <- penlog_preds %>%
   rename(action = .pred_1) 
 
 
-# kaggle file 
-vroom_write(x = penlog_preds, file = "/Users/eliseclark/penlogpreds.csv", delim = ",")
+# kaggle files
+vroom_write(x = amazon_preds, file = "batch0.csv", delim = ",")
+vroom_write(x = penlog_preds, file = "batch.csv", delim = ",")
 
 
 
+###### CLASSIFICATION RANDOM FORESTS ######
+
+# forest recipe
+forest_recipe <- recipe(action ~ ., data = train_data) %>%
+  step_mutate_at(c(resource, mgr_id, role_rollup_1, role_rollup_2, 
+                   role_deptname, role_title, role_family_desc, 
+                   role_family, role_code), fn = factor) %>%
+  step_other(all_nominal_predictors(), threshold = 0.001) %>%
+  step_lencode_mixed(c(resource, mgr_id, role_rollup_1, role_rollup_2, 
+                       role_deptname, role_title, role_family_desc, 
+                       role_family, role_code), outcome = vars(action)) %>%
+  step_rm(mgr_id) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+forest_prep <- prep(forest_recipe)
+forest_data <- bake(forest_prep, new_data = train_data)
 
 
+# model 
+forest_lm <- rand_forest(mtry = tune(),
+                      min_n = tune(),
+                      trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
 
 
+# workflow
+forest_wf <- workflow() %>%
+  add_recipe(forest_recipe) %>% add_model(forest_lm) 
 
+# grid of tuning values
+tuning_grid <- grid_regular(mtry(range = c(1, 8)),
+                            min_n(range = c(2, 10)),
+                            levels = 5)
+
+# set up K-fold CV
+folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+CV_results <- forest_wf %>%
+  tune_grid(resamples = folds,        
+            grid = tuning_grid,
+            metrics = metric_set(roc_auc))
+
+# find best tuning parameters
+bestTune <- CV_results %>%
+  select_best(metric = "roc_auc")
+
+# finalize workflow and predict
+final_wf <- forest_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train_data)
+
+# predictions
+forest_preds <- final_wf %>%
+  predict(new_data = testData, type = "prob")
