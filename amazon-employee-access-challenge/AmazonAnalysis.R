@@ -9,7 +9,7 @@ library(vroom)
 library(glmnet)
 library(embed)
 library(janitor)
-
+library(kknn)
 
 # read in data
 train_data <- vroom("/Users/eliseclark/Documents/Fall 2025/Stat 348/AmazonEmployeeComp/amazon-employee-access-challenge/train.csv")
@@ -201,3 +201,77 @@ final_wf <- forest_wf %>%
 # predictions
 forest_preds <- final_wf %>%
   predict(new_data = testData, type = "prob")
+
+forest_preds <- forest_preds %>%
+  mutate(id = row_number()) %>%
+  select(id, .pred_1) %>%        
+  rename(action = .pred_1)  
+
+vroom_write(x = forest_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348/AmazonEmployeeComp/forest_preds.csv", delim = ",")
+
+
+
+###### KNN MODEL ######
+
+# recipe
+knn_recipe <- recipe(action ~ ., data = train_data) %>%
+  step_rm(mgr_id) %>%
+  step_other(all_nominal_predictors(), threshold = 0.001) %>%
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(action)) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+# knn model
+knn_model <- nearest_neighbor(neighbors = tune()) %>% # set or tune
+  set_mode("classification") %>%
+  set_engine("kknn")
+
+# workflow 
+knn_wf <- workflow() %>%
+  add_recipe(knn_recipe) %>%
+  add_model(knn_model)
+
+
+# grid of tuning values
+tuning_grid <- grid_regular(neighbors(range = c(1, 50)),
+                            levels = 10)
+
+# set up K-fold CV
+folds <- vfold_cv(train_data, v = 4, repeats = 2)
+
+CV_results <- knn_wf %>%
+  tune_grid(resamples = folds,        
+            grid = tuning_grid,
+            metrics = metric_set(roc_auc))
+
+# find best tuning parameters
+bestTune <- CV_results %>%
+  select_best(metric = "roc_auc")
+
+# finalize workflow and predict
+final_wf <- knn_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train_data)
+
+# predictions
+knn_preds <- final_wf %>%
+  predict(new_data = testData, type = "prob")
+
+knn_preds <- knn_preds %>%
+  mutate(id = row_number()) %>%
+  select(id, .pred_1) %>%        
+  rename(action = .pred_1)  
+
+vroom_write(x = forest_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348/AmazonEmployeeComp/knn_preds.csv", delim = ",")
+
+
+
+
+
+
+
+
+
+
+
+
