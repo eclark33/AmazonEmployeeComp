@@ -16,6 +16,7 @@ library(keras)
 library(tune)
 library(tictoc)
 library(kernlab)
+library(themis)
 
 
 library(tensorflow)
@@ -290,14 +291,14 @@ vroom_write(x = knn_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 34
 # recipe
 nb_recipe <- recipe(action ~ ., data = train_data) %>%
   step_rm(mgr_id) %>%
+  step_mutate_at(all_numeric_predictors(), fn = as.factor) %>%
   step_other(all_nominal_predictors(), threshold = 0.001) %>%
   step_lencode_mixed(all_nominal_predictors(), outcome = vars(action)) %>%
-  step_zv(all_predictors()) %>%
-  step_normalize(all_numeric_predictors())
+  step_normalize(all_nominal_predictors())
 
 
 ## nb model
-nb_model <- naive_Bayes(Laplace = tune(), smoothness = tune()) %>%
+nb_model <-naive_Bayes(Laplace = tune(), smoothness = tune()) %>%
   set_mode("classification") %>%
   set_engine("naivebayes")
 
@@ -308,17 +309,18 @@ nb_wf <- workflow() %>%
 
 # Tune smoothness and Laplace here
 # grid of tuning values
-tuning_grid <- grid_regular(Laplace(range = c(0,2)), 
-                            smoothness(range = c(0,2)),
+tuning_grid <- grid_regular(Laplace(), 
+                            smoothness(),
                             levels = 5)
 
 # set up K-fold CV
-folds <- vfold_cv(train_data, v = 3, repeats = 2)
+folds <- vfold_cv(train_data, v = 5, repeats = 2)
 
 CV_results <- nb_wf %>%
   tune_grid(resamples = folds,        
             grid = tuning_grid,
-            metrics = metric_set(roc_auc))
+            metrics = metric_set(roc_auc), 
+            control = control_grid(verbose = TRUE))
 
 # find best tuning parameters
 bestTune <- CV_results %>%
@@ -339,7 +341,7 @@ nb_preds <- nb_preds %>%
   select(id, .pred_1) %>%        
   rename(action = .pred_1) 
 
-vroom_write(x = nb_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348/AmazonEmployeeComp/nb_preds.csv", delim = ",")
+vroom_write(x = nb_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348/AmazonEmployeeComp/ocho_preds.csv", delim = ",")
 
 # above 0.885
 
@@ -398,10 +400,11 @@ vroom_write(x = nn_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348
 
 svm_recipe <- recipe(action ~ ., data = train_data) %>%
   step_rm(mgr_id) %>%
-  step_other(all_nominal_predictors(), threshold = 0.001) %>%
+  step_other(all_nominal_predictors(), threshold = 0.005) %>%
   step_lencode_mixed(all_nominal_predictors(), outcome = vars(action)) %>%
   step_zv(all_predictors()) %>%
-  step_normalize(all_numeric_predictors())
+  step_normalize(all_numeric_predictors()) %>%
+  step_smote(action, neighbors = 5, skip = TRUE)
 
 
 svm_prep <- prep(svm_recipe)
@@ -425,16 +428,17 @@ svmLinear <- svm_linear(cost=tune()) %>% # set or tune
 # workflow 
 svm_wf <- workflow() %>%
   add_recipe(svm_recipe) %>%
-  add_model(svmLinear)
+  add_model(svmRadial)
 
 
 # grid of tuning values
 tuning_grid <- grid_regular(
-  cost(range = c(-2, 1), trans = log10_trans()),        
+  cost(range = c(-2, 2), trans = log10_trans()),
+  rbf_sigma(range = c(-3, 0), trans = log10_trans()),
   levels = 4)
 
 # set up K-fold CV
-folds <- vfold_cv(train_data, v = 3)
+folds <- vfold_cv(train_data, v = 5, strata = action)
 
 
 CV_results <- svm_wf %>%
@@ -464,7 +468,7 @@ svm_preds <- svm_preds %>%
   rename(action = .pred_1) 
 
 
-vroom_write(x = svm_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348/AmazonEmployeeComp/svmLinear_preds.csv", delim = ",")
+vroom_write(x = svm_preds, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348/AmazonEmployeeComp/svmRadial2_preds.csv", delim = ",")
 
 
 
